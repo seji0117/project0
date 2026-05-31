@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>인공위성 궤도 추락 시뮬레이션</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1e1e1e; color: #fff; margin: 0; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        canvas { background-color: #000; border: 1px solid #444; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; width: 100%; max-width: 800px; margin-top: 20px; background: #2a2a2a; padding: 20px; border-radius: 8px; }
+        .control-group { display: flex; flex-direction: column; }
+        label { margin-bottom: 5px; font-size: 0.9em; color: #aaa; }
+        input[type=range] { width: 100%; }
+        button { grid-column: 1 / -1; padding: 10px; background-color: #007acc; color: white; border: none; border-radius: 4px; font-size: 1.1em; cursor: pointer; transition: background 0.3s; }
+        button:hover { background-color: #005f9e; }
+        .value-display { font-size: 0.8em; color: #4fc3f7; text-align: right; }
+    </style>
+</head>
+<body>
+
+    <h2>인공위성 낙하 시뮬레이션</h2>
+    <canvas id="simCanvas" width="800" height="500"></canvas>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>초기 고도 <span id="val_height" class="value-display">200</span></label>
+            <input type="range" id="param_height" min="100" max="400" value="200">
+        </div>
+        <div class="control-group">
+            <label>초기 속도 <span id="val_velocity" class="value-display">4.5</span></label>
+            <input type="range" id="param_velocity" min="1" max="10" step="0.1" value="4.5">
+        </div>
+        <div class="control-group">
+            <label>행성 질량 (중력) <span id="val_mass" class="value-display">1000</span></label>
+            <input type="range" id="param_mass" min="500" max="3000" value="1000">
+        </div>
+        <div class="control-group">
+            <label>대기 밀도 (마찰) <span id="val_drag" class="value-display">0.05</span></label>
+            <input type="range" id="param_drag" min="0" max="0.2" step="0.01" value="0.05">
+        </div>
+        <div class="control-group">
+            <label>위성 질량 <span id="val_sat_mass" class="value-display">10</span></label>
+            <input type="range" id="param_sat_mass" min="1" max="50" value="10">
+        </div>
+        <button id="resetBtn">시뮬레이션 초기화 / 시작</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // UI 요소 연결
+        const inputs = ['height', 'velocity', 'mass', 'drag', 'sat_mass'];
+        const params = {};
+        
+        inputs.forEach(id => {
+            const el = document.getElementById(`param_${id}`);
+            const valDisplay = document.getElementById(`val_${id}`);
+            params[id] = parseFloat(el.value);
+            el.addEventListener('input', (e) => {
+                params[id] = parseFloat(e.target.value);
+                valDisplay.innerText = e.target.value;
+            });
+        });
+
+        const planetRadius = 50;
+        const atmosphereRadius = 130;
+        let satellite = {};
+        let trail = [];
+        let animationId;
+        let isCrashed = false;
+
+        function initSimulation() {
+            cancelAnimationFrame(animationId);
+            trail = [];
+            isCrashed = false;
+
+            // 위성 초기 상태 설정 (행성 중심은 캔버스 중앙)
+            satellite = {
+                x: canvas.width / 2,
+                y: canvas.height / 2 - planetRadius - params.height, // 위쪽에서 시작
+                vx: params.velocity, // 오른쪽으로 초기 속도 부여
+                vy: 0
+            };
+
+            animate();
+        }
+
+        function updatePhysics() {
+            if (isCrashed) return;
+
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            
+            // 거리 계산
+            const dx = cx - satellite.x;
+            const dy = cy - satellite.y;
+            const distSq = dx * dx + dy * dy;
+            const dist = Math.sqrt(distSq);
+
+            // 충돌 체크
+            if (dist <= planetRadius) {
+                isCrashed = true;
+                return;
+            }
+
+            // 1. 중력 계산 (F = G * M / r^2) -> 가속도 a = F / m
+            // G 상수 대신 행성 질량 값을 직접 스케일링하여 사용
+            const gravityForce = params.mass / distSq; 
+            const ax = gravityForce * (dx / dist);
+            const ay = gravityForce * (dy / dist);
+
+            // 2. 공기 저항(마찰) 계산 (대기권 내에 있을 때만)
+            let drag_ax = 0;
+            let drag_ay = 0;
+            if (dist < atmosphereRadius) {
+                const speedSq = satellite.vx * satellite.vx + satellite.vy * satellite.vy;
+                const speed = Math.sqrt(speedSq);
+                
+                // 마찰력 방향은 현재 속도의 반대 방향
+                // 위성의 질량이 클수록 감속(가속도 변화)이 적음 (a = F/m)
+                const dragForce = (params.drag * speedSq) / params.sat_mass; 
+                if (speed > 0) {
+                    drag_ax = -dragForce * (satellite.vx / speed);
+                    drag_ay = -dragForce * (satellite.vy / speed);
+                }
+            }
+
+            // 속도 업데이트
+            satellite.vx += ax + drag_ax;
+            satellite.vy += ay + drag_ay;
+
+            // 위치 업데이트
+            satellite.x += satellite.vx;
+            satellite.y += satellite.vy;
+
+            // 궤적 저장 (최대 300개 유지)
+            trail.push({x: satellite.x, y: satellite.y});
+            if (trail.length > 300) trail.shift();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            // 대기권 그리기
+            ctx.beginPath();
+            ctx.arc(cx, cy, atmosphereRadius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(79, 195, 247, 0.15)';
+            ctx.fill();
+
+            // 행성 그리기
+            ctx.beginPath();
+            ctx.arc(cx, cy, planetRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#4caf50';
+            ctx.fill();
+            ctx.strokeStyle = '#388e3c';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // 궤적 그리기
+            if (trail.length > 1) {
+                ctx.beginPath();
+                ctx.moveTo(trail[0].x, trail[0].y);
+                for (let i = 1; i < trail.length; i++) {
+                    ctx.lineTo(trail[i].x, trail[i].y);
+                }
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+
+            // 위성 그리기
+            ctx.beginPath();
+            ctx.arc(satellite.x, satellite.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = isCrashed ? '#ff5252' : '#ffffff';
+            ctx.fill();
+
+            // 충돌 메시지
+            if (isCrashed) {
+                ctx.fillStyle = '#ff5252';
+                ctx.font = '24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('위성이 표면에 추락했습니다!', cx, cy - 60);
+            }
+        }
+
+        function animate() {
+            // 시뮬레이션 속도를 위해 프레임당 물리 연산을 여러 번 수행
+            for(let i=0; i<3; i++) {
+                updatePhysics();
+            }
+            draw();
+            
+            if (!isCrashed) {
+                animationId = requestAnimationFrame(animate);
+            }
+        }
+
+        document.getElementById('resetBtn').addEventListener('click', initSimulation);
+        
+        // 초기 시작
+        initSimulation();
+    </script>
+</body>
+</html>
